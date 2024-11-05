@@ -1,0 +1,105 @@
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+
+class Payment_online extends CI_Controller {
+
+    private $merchantId = 'M220VNABFW4D1';  // Your Merchant ID
+    private $saltKey = 'd210da1a-293f-463a-83c9-a3fd78d4623c';  // Your Salt Key
+    private $saltKeyIndex = '1';  // Salt Key Index
+
+    public function __construct() {
+        parent::__construct();
+        $this->load->library('curl');  // Load CURL library
+    }
+
+    public function initiatePayment() {
+        // Prepare the request payload
+        $payload = [
+            'merchantId' => $this->merchantId,
+            'merchantTransactionId' => 'MT' . time(),
+            'merchantUserId' => 'USER123',
+            'amount' => 10000,  // Amount in Paise
+            'redirectUrl' => base_url('PaymentController/redirectHandler'),
+            'redirectMode' => 'REDIRECT',
+            'callbackUrl' => base_url('PaymentController/callbackHandler'),
+            'paymentInstrument' => [
+                'type' => 'PAY_PAGE'
+            ],
+            'mobileNumber' => '9999999999'
+        ];
+
+        // Convert payload to JSON and Base64 encode it
+        $payloadJson = json_encode($payload);
+        $base64Payload = base64_encode($payloadJson);
+
+        // Calculate X-VERIFY Header
+        $xVerify = $this->calculateXVerify($base64Payload);
+
+        // Prepare request headers
+        $headers = [
+            'Content-Type: application/json',
+            'X-VERIFY: ' . $xVerify
+        ];
+
+        // Send POST request to PhonePe API
+        $response = $this->sendPostRequest('https://api.phonepe.com/apis/hermes/pg/v1/pay', [
+            'request' => $base64Payload
+        ], $headers);
+
+        // Handle the API response
+        $this->handleResponse($response);
+    }
+
+    private function calculateXVerify($base64Payload) {
+        $stringToHash = $base64Payload . '/pg/v1/pay' . $this->saltKey;
+        $hash = hash('sha256', $stringToHash);
+        return $hash . '###' . $this->saltKeyIndex;
+    }
+
+    private function sendPostRequest($url, $postData, $headers) {
+        $this->curl->create($url);
+        $this->curl->http_header($headers);
+        $this->curl->post($postData);
+
+        return $this->curl->execute();
+    }
+
+    private function handleResponse($response) {
+        $responseData = json_decode($response, true);
+        if ($responseData['success']) {
+            // Redirect user to the redirect URL from PhonePe
+            $redirectUrl = $responseData['data']['instrumentResponse']['redirectInfo']['url'];
+            redirect($redirectUrl);
+        } else {
+            // Handle error
+            echo 'Payment initiation failed: ' . $responseData['message'];
+        }
+    }
+
+    public function redirectHandler() {
+        // Handle user redirect after payment
+        echo 'Payment completed. Processing redirect...';
+    }
+
+    public function callbackHandler() {
+        // Handle server-to-server callback from PhonePe
+        $input = file_get_contents("php://input");
+        $callbackData = json_decode($input, true);
+
+        // Verify X-VERIFY header
+        $xVerify = $this->input->get_request_header('X-VERIFY');
+        $calculatedXVerify = $this->calculateXVerify(base64_encode($input));
+
+        if ($xVerify === $calculatedXVerify) {
+            // Process payment status and update database accordingly
+            if ($callbackData['success']) {
+                echo 'Payment success';
+                // Update database, etc.
+            } else {
+                echo 'Payment failed';
+            }
+        } else {
+            echo 'Invalid X-VERIFY header';
+        }
+    }
+}
